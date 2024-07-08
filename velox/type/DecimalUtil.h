@@ -16,11 +16,13 @@
 
 #pragma once
 
+#include <xsimd/xsimd.hpp>
 #include <string>
 #include "velox/common/base/CheckedArithmetic.h"
 #include "velox/common/base/CountBits.h"
 #include "velox/common/base/Exceptions.h"
 #include "velox/common/base/Nulls.h"
+#include "velox/common/base/SimdUtil.h"
 #include "velox/common/base/Status.h"
 #include "velox/type/Type.h"
 
@@ -29,6 +31,28 @@ namespace facebook::velox {
 /// A static class that holds helper functions for DECIMAL type.
 class DecimalUtil {
  public:
+  static constexpr int64_t
+      kPowersOfTenForShortDecimal[ShortDecimalType::kMaxPrecision + 1] = {
+          1,
+          10,
+          100,
+          1'000,
+          10'000,
+          100'000,
+          1'000'000,
+          10'000'000,
+          100'000'000,
+          1'000'000'000,
+          10'000'000'000,
+          100'000'000'000,
+          1'000'000'000'000,
+          10'000'000'000'000,
+          100'000'000'000'000,
+          1'000'000'000'000'000,
+          10'000'000'000'000'000,
+          100'000'000'000'000'000,
+          1'000'000'000'000'000'000};
+
   static constexpr int128_t kPowersOfTen[LongDecimalType::kMaxPrecision + 1] = {
       1,
       10,
@@ -102,6 +126,20 @@ class DecimalUtil {
   /// Helper function to convert a decimal value to string.
   static std::string toString(int128_t value, const TypePtr& type);
 
+  inline static void
+  getShortDecimals(int64_t& value, int32_t currentScale, int32_t targetScale) {
+    if (targetScale > currentScale &&
+        targetScale - currentScale <= ShortDecimalType::kMaxPrecision) {
+      value *= static_cast<int64_t>(kPowersOfTen[targetScale - currentScale]);
+    } else if (
+        targetScale < currentScale &&
+        currentScale - targetScale <= ShortDecimalType::kMaxPrecision) {
+      value /= static_cast<int64_t>(kPowersOfTen[currentScale - targetScale]);
+    } else if (targetScale != currentScale) {
+      VELOX_FAIL("Decimal scale out of range");
+    }
+  }
+
   template <typename T>
   inline static void fillDecimals(
       T* decimals,
@@ -110,21 +148,54 @@ class DecimalUtil {
       const int64_t* scales,
       int32_t numValues,
       int32_t targetScale) {
-    for (int32_t i = 0; i < numValues; i++) {
+    using batch_type = xsimd::batch<T>;
+    constexpr int32_t simdWidth = batch_type::size;
+    int32_t i = 0;
+    if constexpr (std::is_same_v<T, std::int64_t>) { // Short Decimal
+      for (; i <= numValues - simdWidth; i += simdWidth) {
+        bool allNonNull = true;
+        for (int j = 0; j < simdWidth; ++j) {
+          if (nullsPtr && bits::isBitNull(nullsPtr, i + j)) {
+            allNonNull = false;
+            break;
+          }
+        }
+
+        if (allNonNull) {
+          auto currentScales = xsimd::load_unaligned(scales + i);
+          auto valuesVec = xsimd::load_unaligned(values + i);
+          auto targetScales = batch_type(targetScale);
+          auto scaleDiff = targetScales - currentScales;
+          auto absScaleDiff = xsimd::abs(scaleDiff);
+          auto powersVec = simd::gather<int64_t, int64_t>(
+              kPowersOfTenForShortDecimal, absScaleDiff);
+          int32_t matchMask = simd::toBitMask(currentScales == targetScales);
+          if (matchMask != simd::allSetBitMask<int64_t>()) {
+            valuesVec = xsimd::select(
+                currentScales < targetScales,
+                valuesVec * powersVec,
+                valuesVec / powersVec);
+          }
+
+          valuesVec.store_unaligned(decimals + i);
+        } else {
+          for (int j = 0; j < simdWidth; ++j) {
+            if (!nullsPtr || !bits::isBitNull(nullsPtr, i + j)) {
+              T value = values[i + j];
+              getShortDecimals(value, scales[i + j], targetScale);
+              decimals[i + j] = value;
+            }
+          }
+        }
+      }
+    }
+
+    for (; i < numValues; ++i) {
       if (!nullsPtr || !bits::isBitNull(nullsPtr, i)) {
         int32_t currentScale = scales[i];
         T value = values[i];
         if constexpr (std::is_same_v<T, std::int64_t>) { // Short Decimal
-          if (targetScale > currentScale &&
-              targetScale - currentScale <= ShortDecimalType::kMaxPrecision) {
-            value *= static_cast<T>(kPowersOfTen[targetScale - currentScale]);
-          } else if (
-              targetScale < currentScale &&
-              currentScale - targetScale <= ShortDecimalType::kMaxPrecision) {
-            value /= static_cast<T>(kPowersOfTen[currentScale - targetScale]);
-          } else if (targetScale != currentScale) {
-            VELOX_FAIL("Decimal scale out of range");
-          }
+          getShortDecimals(value, currentScale, targetScale);
         } else { // Long Decimal
           if (targetScale > currentScale) {
             while (targetScale > currentScale) {

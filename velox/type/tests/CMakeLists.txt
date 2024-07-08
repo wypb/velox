@@ -53,6 +53,18 @@ target_link_libraries(
   gflags::gflags
   glog::glog)
 
+add_executable(velox_decimal_benchmark DecimalUtilBenchmark.cpp)
+
+target_link_libraries(
+        velox_decimal_benchmark
+        velox_memory
+        Folly::folly
+        ${FOLLY_BENCHMARK}
+        gtest
+        gtest_main
+        gflags::gflags
+        glog::glog)
+
 add_executable(velox_negated_values_filter_benchmark
                NegatedValuesFilterBenchmark.cpp)
 
