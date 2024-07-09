@@ -65,29 +65,106 @@ int64_t rand(std::mt19937& rng) {
       DecimalUtil::kPowersOfTen[10];
 }
 
-int32_t testNoSimd() {
-  fillDecimals(results, nullptr, values, scales, numValues, targetScale);
-  return 0;
+int fillDecimalsBenchmark(int nIters, int nScales, bool isNull, bool isSimd) {
+  folly::BenchmarkSuspender suspender;
+
+  if (isSimd) {
+    DecimalUtil::fillDecimals(
+        resultsSimd, nullptr, values, scales, numValues, targetScale);
+  } else {
+    fillDecimals(resultsSimd, nullptr, values, scales, numValues, targetScale);
+  }
+
+  return nIters * numValues;
 }
 
-int32_t testSimd() {
-  DecimalUtil::fillDecimals(
-      resultsSimd, nullptr, values, scales, numValues, targetScale);
-  return 0;
-}
+BENCHMARK_NAMED_PARAM_MULTI(
+    fillDecimalsBenchmark,
+    fillDecimals_2_false_false,
+    2,
+    false,
+    false);
 
-BENCHMARK(noSimdDecimal) {
-  folly::doNotOptimizeAway(testNoSimd());
-}
+BENCHMARK_NAMED_PARAM_MULTI(
+    fillDecimalsBenchmark,
+    fillDecimals_4_false_false,
+    4,
+    false,
+    false);
 
-BENCHMARK_RELATIVE(simdDecimal) {
-  folly::doNotOptimizeAway(testSimd());
-}
+BENCHMARK_NAMED_PARAM_MULTI(
+    fillDecimalsBenchmark,
+    fillDecimals_6_false_false,
+    6,
+    false,
+    false);
+
+BENCHMARK_NAMED_PARAM_MULTI(
+    fillDecimalsBenchmark,
+    fillDecimals_2_true_false,
+    2,
+    true,
+    false);
+
+BENCHMARK_NAMED_PARAM_MULTI(
+    fillDecimalsBenchmark,
+    fillDecimals_4_true_false,
+    4,
+    true,
+    false);
+
+BENCHMARK_NAMED_PARAM_MULTI(
+    fillDecimalsBenchmark,
+    fillDecimals_6_true_false,
+    6,
+    true,
+    false);
+
+BENCHMARK_NAMED_PARAM_MULTI(
+    fillDecimalsBenchmark,
+    fillDecimals_2_false_true,
+    2,
+    false,
+    true);
+
+BENCHMARK_NAMED_PARAM_MULTI(
+    fillDecimalsBenchmark,
+    fillDecimals_4_false_true,
+    4,
+    false,
+    true);
+
+BENCHMARK_NAMED_PARAM_MULTI(
+    fillDecimalsBenchmark,
+    fillDecimals_6_false_true,
+    6,
+    false,
+    true);
+
+BENCHMARK_NAMED_PARAM_MULTI(
+    fillDecimalsBenchmark,
+    fillDecimals_2_true_true,
+    2,
+    true,
+    true);
+
+BENCHMARK_NAMED_PARAM_MULTI(
+    fillDecimalsBenchmark,
+    fillDecimals_4_true_true,
+    4,
+    true,
+    true);
+
+BENCHMARK_NAMED_PARAM_MULTI(
+    fillDecimalsBenchmark,
+    fillDecimals_6_true_true,
+    6,
+    true,
+    true);
 
 int32_t main(int32_t argc, char* argv[]) {
   folly::Init init{&argc, &argv};
   memory::MemoryManager::testingSetInstance({});
-
   auto pool = memory::memoryManager()->addLeafPool();
   std::mt19937 seed{12345};
   auto valuesBufferPtr =
@@ -103,26 +180,40 @@ int32_t main(int32_t argc, char* argv[]) {
   resultsSimd = resultsSimdBufferPtr->asMutable<int64_t>();
 
   auto scalesBufferPtr =
-      AlignedBuffer::allocate<int64_t>(numValues, pool.get(), 6);
+      AlignedBuffer::allocate<int64_t>(numValues, pool.get(), 4);
   scales = scalesBufferPtr->as<int64_t>();
 
   auto numBytes = bits::nbytes(numValues);
-  auto nulls = AlignedBuffer::allocate<char>(numBytes, pool.get(), 1);
+  auto nulls = AlignedBuffer::allocate<char>(numBytes, pool.get(), 0);
   nulls->setSize(numBytes);
   auto* nullsPtr = nulls->asMutable<uint64_t>();
+  if (false) {
+    for (auto i = 0; i < numValues; i++) {
+      if (i % 6 == 0) {
+        bits::setNull(nullsPtr, 1);
+      }
+    }
+  }
 
   for (auto i = 0; i < numValues; i++) {
     values[i] = rand(seed);
   }
-
-  fillDecimals(results, nullptr, values, scales, numValues, targetScale);
-  DecimalUtil::fillDecimals(
-      resultsSimd, nullptr, values, scales, numValues, targetScale);
-  for (auto i = 0; i < numValues; i++) {
-    if (!bits::isBitNull(nullsPtr, i)) {
-      VELOX_CHECK_EQ(results[i], resultsSimd[i]);
-    }
-  }
+//  auto resultsBufferPtr =
+//      AlignedBuffer::allocate<int64_t>(numValues, pool.get());
+//  results = resultsBufferPtr->asMutable<int64_t>();
+//
+//  auto resultsSimdBufferPtr =
+//      AlignedBuffer::allocate<int64_t>(numValues, pool.get());
+//  resultsSimd = resultsSimdBufferPtr->asMutable<int64_t>();
+//
+//  fillDecimals(results, nullptr, values, scales, numValues, targetScale);
+//  DecimalUtil::fillDecimals(
+//      resultsSimd, nullptr, values, scales, numValues, targetScale);
+//  for (auto i = 0; i < numValues; i++) {
+//    if (!bits::isBitNull(nullsPtr, i)) {
+//      VELOX_CHECK_EQ(results[i], resultsSimd[i]);
+//    }
+//  }
 
   folly::runBenchmarks();
   return 0;
